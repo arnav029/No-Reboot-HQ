@@ -1,0 +1,120 @@
+## Design Document: No-Reboot HQ
+
+A Real-Time, Dynamic Configuration Management System
+
+## 1. Introduction
+
+Modern software applications rely on numerous configuration settings, such as feature flags, rate limits, and database connection strings. Traditionally, updating these configurations requires a service restart, a process that is slow, risky, and leads to application downtime.
+
+No-Reboot HQ is a centralized, event-driven system designed to solve this problem. It allows for the dynamic management of application configurations, which are updated across all running services in real-time, completely eliminating the need for restarts.
+
+## 2. Goals and Objectives
+
+The primary goals of this project are:
+
+    Centralized Management: Provide a single source of truth for all application configurations through a REST API.
+
+Zero-Downtime Updates: Enable configuration changes to take effect instantly without interrupting service availability.
+
+Real-Time Propagation: Utilize a message broker to broadcast updates to all subscribed services with minimal latency.
+
+Versioning and Auditability: Maintain a complete history of all configuration changes to ensure auditability and support potential rollbacks.
+
+    Decoupled Architecture: Ensure that the configuration management service and the client services are independent, improving system resilience and scalability.
+
+## 3. System Architecture
+
+The system is composed of three core components that work together in an event-driven pattern.
+
+    1. Config Service (The Backend): A Django application that serves as the central authority. It exposes a REST API for managing configurations, stores the data in a PostgreSQL database, and publishes update events.
+
+    2. Message Broker (The Messenger): Apache Kafka acts as the real-time, high-throughput message bus. It decouples the Config Service from the clients and is responsible for broadcasting update messages.
+
+    3. Client Service (The Consumer): A standalone Python application that simulates a real microservice. It fetches its initial configuration from the API and then listens to the Kafka topic for live updates, which it applies to its in-memory state.
+
+## 4. API Specification
+
+The Config Service exposes the following REST API endpoints built with Django Rest Framework.
+
+List Active Configurations
+
+    Endpoint: GET /api/configs/
+
+    Method: GET
+
+    Description: Retrieves a list of all currently active configurations. This is used by client services on startup.
+
+    Success Response: 200 OK
+    JSON
+
+    [
+      {
+        "id": 1,
+        "name": "timeout",
+        "value": 5000,
+        "is_active": true,
+        "created_at": "2025-10-05T03:14:10Z"
+      }
+    ]
+
+Create or Update a Configuration
+
+    Endpoint: POST /api/configs/update/
+
+    Method: POST
+
+    Description: Creates a new configuration or updates an existing one by creating a new version.
+
+    Request Body:
+    JSON
+
+    {
+      "name": "timeout",
+      "value": 6000
+    }
+
+    Success Response: 201 CREATED
+
+## 5. Data Model
+
+Configuration data is stored in a PostgreSQL database using the following Django model. This structure supports versioning by flagging only one entry per configuration name as is_active.
+Python
+
+class Configuration(models.Model):
+    name = models.CharField(max_length=100, db_index=True)
+    value = models.JSONField()
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+## 6. Workflow: Configuration Update Sequence
+
+The following sequence occurs when a configuration is updated.
+
+    An administrator sends a POST request to the /api/configs/update/ endpoint.
+
+    The Django Service validates the request.
+
+    It finds the current active configuration with the same name and sets its is_active field to False.
+
+    It creates a new record in the database with the new value and is_active set to True.
+
+    The service then publishes a JSON message (e.g., {"name": "timeout", "value": 6000}) to the config_updates topic in Kafka.
+
+    The Client Service's background Kafka listener receives this message.
+
+    The listener updates the shared, in-memory configuration dictionary.
+
+    The client's main application loop reads from this updated dictionary on its next cycle, and the new behavior takes effect instantly.
+
+## 7. Deployment & Setup
+
+The entire application stack is containerized using Docker and orchestrated with Docker Compose. This ensures a consistent, isolated, and easily reproducible environment. The Kafka broker and the backend service can be launched with a single command: docker-compose up.
+
+## 8. Future Enhancements
+
+    UI Dashboard: A simple web interface for non-technical users to manage configurations visually.
+
+Rollback API: A dedicated API endpoint to quickly revert to a previously stable configuration version.
+
+Security (RBAC): Implementation of Role-Based Access Control to ensure only authorized users can modify configurations.
